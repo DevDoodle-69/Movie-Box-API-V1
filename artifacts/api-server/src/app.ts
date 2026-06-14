@@ -3,6 +3,7 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
@@ -38,19 +39,33 @@ app.use(express.urlencoded({ extended: true }));
 // ============================================================
 // Serve Docs Website (React Build)
 // ============================================================
-const docsPath = path.resolve(__dirname, "../../artifacts/docs/dist");
+const docsPath = path.resolve(__dirname, "../../artifacts/docs/dist/public");
+const indexPath = path.join(docsPath, "index.html");
 
-// Serve static files from docs
-app.use("/docs", express.static(docsPath));
+// Check if docs build exists
+if (fs.existsSync(docsPath)) {
+  // Serve static files from docs
+  app.use("/docs", express.static(docsPath));
 
-// Handle SPA routing - all /docs/* requests should serve index.html
-app.get("/docs", (_req: Request, res: Response) => {
-  res.sendFile(path.join(docsPath, "index.html"));
-});
+  // Handle SPA routing - all /docs/* requests should serve index.html
+  app.get("/docs", (_req: Request, res: Response, next: NextFunction) => {
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      next();
+    }
+  });
 
-app.get(/^\/docs\/.*/, (_req: Request, res: Response) => {
-  res.sendFile(path.join(docsPath, "index.html"));
-});
+  app.get(/^\/docs\/.*/, (_req: Request, res: Response, next: NextFunction) => {
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      next();
+    }
+  });
+} else {
+  logger.warn(`Docs build not found at ${docsPath}`);
+}
 
 // ============================================================
 // API Routes (with /api prefix)
