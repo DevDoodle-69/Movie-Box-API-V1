@@ -39,8 +39,16 @@ app.use(express.urlencoded({ extended: true }));
 // Serve Docs Website (React Build)
 // ============================================================
 const docsPath = path.resolve(__dirname, "../../artifacts/docs/dist");
+
+// Serve static files from docs
 app.use("/docs", express.static(docsPath));
-app.get("/docs/*", (_req: Request, res: Response) => {
+
+// Handle SPA routing - all /docs/* requests should serve index.html
+app.get("/docs", (_req: Request, res: Response) => {
+  res.sendFile(path.join(docsPath, "index.html"));
+});
+
+app.get(/^\/docs\/.*/, (_req: Request, res: Response) => {
   res.sendFile(path.join(docsPath, "index.html"));
 });
 
@@ -73,7 +81,7 @@ app.get("/", (_req: Request, res: Response) => {
 // ============================================================
 // 404 handler for /api/* paths
 // ============================================================
-app.use("/api/*", (_req: Request, res: Response) => {
+app.use("/api", (_req: Request, res: Response) => {
   res.status(404).json({ success: false, error: "Endpoint not found. GET /api/ for documentation." });
 });
 
