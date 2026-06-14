@@ -39,11 +39,13 @@ app.use(express.urlencoded({ extended: true }));
 // ============================================================
 // Serve Docs Website (React Build)
 // ============================================================
-const docsPath = path.resolve(__dirname, "../../artifacts/docs/dist/public");
+const docsPath = path.resolve(__dirname, "../../artifacts/docs/dist");
 const indexPath = path.join(docsPath, "index.html");
 
 // Check if docs build exists
 if (fs.existsSync(docsPath)) {
+  logger.info(`Docs path found at ${docsPath}`);
+  
   // Serve static files from docs
   app.use("/docs", express.static(docsPath));
 
@@ -52,6 +54,7 @@ if (fs.existsSync(docsPath)) {
     if (fs.existsSync(indexPath)) {
       res.sendFile(indexPath);
     } else {
+      logger.warn(`index.html not found at ${indexPath}`);
       next();
     }
   });
@@ -60,11 +63,12 @@ if (fs.existsSync(docsPath)) {
     if (fs.existsSync(indexPath)) {
       res.sendFile(indexPath);
     } else {
+      logger.warn(`index.html not found at ${indexPath}`);
       next();
     }
   });
 } else {
-  logger.warn(`Docs build not found at ${docsPath}`);
+  logger.warn(`Docs build not found at ${docsPath}. /docs routes will not be available.`);
 }
 
 // ============================================================
