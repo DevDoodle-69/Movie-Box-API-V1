@@ -39,7 +39,7 @@ app.use(express.urlencoded({ extended: true }));
 // ============================================================
 // Serve Docs Website (React Build)
 // ============================================================
-const docsPath = path.resolve(__dirname, "../../artifacts/docs/dist");
+const docsPath = path.resolve(__dirname, "../../docs/dist");
 const indexPath = path.join(docsPath, "index.html");
 
 // Check if docs build exists

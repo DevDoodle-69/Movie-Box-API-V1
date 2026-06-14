@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Router as WouterRouter, Switch, Route } from "wouter";
+import TestLivePage from "./pages/TestLivePage";
 
 const BASE_URL_KEY = "mb_base_url";
 
@@ -935,6 +936,7 @@ function App() {
   return (
     <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
       <Switch>
+        <Route path="/test-live" component={TestLivePage} />
         <Route path="/" component={DocsPage} />
         <Route component={DocsPage} />
       </Switch>
