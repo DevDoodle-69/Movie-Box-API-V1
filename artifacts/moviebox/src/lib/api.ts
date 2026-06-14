@@ -5,6 +5,8 @@ import type {
   HomepageResult,
   TrendingResult,
   NormalizedItem,
+  StaffMember,
+  ResourceDetector,
 } from "./types";
 
 const BASE = "/api";
@@ -27,8 +29,56 @@ export function suggest(q: string, limit = 8): Promise<SuggestResult> {
   return get<SuggestResult>(`/test-live/suggest?q=${encodeURIComponent(q)}&limit=${limit}`);
 }
 
-export function getItem(id: string, season = 0, episode = 0): Promise<ItemDetail> {
-  return get<ItemDetail>(`/test-live/item?id=${id}&season=${season}&episode=${episode}`);
+export async function getItem(id: string, season = 0, episode = 0): Promise<ItemDetail> {
+  const raw = await get<Record<string, unknown>>(`/test-live/item?id=${id}&season=${season}&episode=${episode}`);
+
+  // The API returns: { id, subject: MbDetailResult, streams: ResourceDetector[], play, season, errors }
+  // subject is the MbDetailResult which has top-level fields AND possibly a nested `subject` (MbContentItem)
+  const subjectData = (raw.subject ?? {}) as Record<string, unknown>;
+
+  // Some V3 responses nest the item inside `subject.subject`, others are flat
+  const inner = (subjectData.subject ?? subjectData) as Record<string, unknown>;
+  const cover = (inner.cover ?? subjectData.cover ?? {}) as Record<string, unknown>;
+
+  // Streams from resource endpoint (ResourceDetector[])
+  const streams = (raw.streams ?? []) as ResourceDetector[];
+  const bestStream = streams.length > 0 ? streams[0] : undefined;
+
+  // Determine content type
+  const subjectType = (inner.subjectType ?? subjectData.subjectType ?? 1) as number;
+  const typeMap: Record<number, string> = { 1: "MOVIE", 2: "TV_SERIES", 5: "EDUCATION", 6: "MUSIC", 7: "ANIME" };
+  const type = typeMap[subjectType] ?? "MOVIE";
+
+  // Season count from multiple possible locations
+  const seNum = (inner.seNum ?? subjectData.seNum ?? inner.season ?? 0) as number;
+  const totalSeasons = (subjectData.seasons ?? inner.seasons ?? seNum) as number;
+
+  // Staff list
+  const staffList = (inner.staffList ?? subjectData.staffList ?? []) as StaffMember[];
+
+  // Build the normalized ItemDetail
+  return {
+    success: true,
+    subjectId: (inner.subjectId ?? subjectData.subjectId ?? id) as string,
+    title: (inner.title ?? subjectData.title ?? "Unknown") as string,
+    type,
+    subjectType,
+    coverUrl: ((inner.coverImageUrl ?? cover.url ?? subjectData.coverImageUrl ?? "") as string),
+    releaseDate: (inner.releaseDate ?? subjectData.releaseDate) as string | undefined,
+    genre: (inner.genre ?? subjectData.genre) as string | undefined,
+    rating: (inner.imdbRatingValue ?? subjectData.imdbRatingValue) as string | undefined,
+    country: (inner.countryName ?? subjectData.countryName) as string | undefined,
+    duration: (inner.duration ?? subjectData.duration) as string | undefined,
+    description: (inner.description ?? subjectData.description) as string | undefined,
+    staffList: staffList.length > 0 ? staffList : undefined,
+    streams,
+    totalStreams: streams.length,
+    bestStream,
+    seNum: seNum > 0 ? seNum : undefined,
+    totalSeasons: totalSeasons > 0 ? totalSeasons : undefined,
+    contentRating: (inner.contentRating ?? subjectData.contentRating) as string | undefined,
+    errors: raw.errors as Record<string, string> | undefined,
+  };
 }
 
 export function getHomepage(): Promise<HomepageResult> {
@@ -43,10 +93,21 @@ export function getHot(): Promise<{ success: boolean; data?: { items?: unknown[]
   return get("/hot");
 }
 
-export function getEpisodeResource(id: string, season = 0, episode = 0) {
-  return get<{ success: boolean; data?: { resourceDetectors?: unknown[] }; resourceDetectors?: unknown[] }>(
+export async function getEpisodeResource(id: string, season = 0, episode = 0) {
+  const raw = await get<{ success: boolean; data?: Record<string, unknown> }>(
     `/episode/resource?id=${id}&season=${season}&episode=${episode}`
   );
+  const data = (raw.data ?? {}) as Record<string, unknown>;
+  // The V3 API returns `resourceDetectors` inside the data object
+  const resourceDetectors = (data.resourceDetectors ?? data.list ?? data.downloads ?? []) as ResourceDetector[];
+  return {
+    success: raw.success,
+    data: {
+      ...data,
+      resourceDetectors,
+    },
+    resourceDetectors,
+  };
 }
 
 export function getSeriesDetails(id: string, season = 1) {

@@ -470,7 +470,7 @@ router.get("/test-live/item", async (req, res) => {
       success: true,
       id,
       subject: subjectData,
-      streams: r?.list ?? r?.downloads ?? [],
+      streams: r?.resourceDetectors ?? r?.list ?? r?.downloads ?? [],
       totalEpisode: r?.totalEpisode ?? 0,
       resolution: r?.resolution ?? null,
       play: playData,
