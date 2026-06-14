@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "pndodiMYle_uLzXenR7bY"
+uri = "file://prompt.txt"
+type = "text"
+title = "AI Prompt — Migrate Movie App to New API"

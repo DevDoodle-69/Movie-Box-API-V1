@@ -1,0 +1,509 @@
+You are an expert React Native / Flutter / mobile app developer. I have a movie watching mobile app that was previously using the MovieBox API (moviebox-api Python library). That API has been suspended, so I need you to update my entire app to use my new self-hosted REST API server instead.
+
+=============================================================
+BASE URL
+=============================================================
+Use this base URL for ALL API calls in the app:
+
+  http://localhost:8080
+
+When running on a physical device or an emulator, replace "localhost" with your machine's local IP (e.g. http://192.168.1.X:8080) or your deployed Render.com URL (e.g. https://your-app-name.onrender.com).
+
+=============================================================
+WHAT YOU MUST DO
+=============================================================
+1. Remove ALL previous MovieBox API integration code (any direct calls to aoneroom.com, h5.aoneroom.com, h5-api.aoneroom.com, api6.aoneroom.com, etc.).
+2. Remove any old API keys, signed headers, cookie handling, or V1/V2/V3 logic in the app.
+3. Replace every API call with the new endpoints listed below.
+4. Wire up every screen/feature using the response shapes described below — no need to change your UI, just swap the data sources.
+
+=============================================================
+ALL ENDPOINTS — REQUEST & RESPONSE
+=============================================================
+
+---------------------------------------------------------------
+1. HEALTH CHECK
+---------------------------------------------------------------
+GET /api/healthz
+
+Response:
+{
+  "status": "ok"
+}
+
+Use this to check if the server is alive before making other calls.
+
+---------------------------------------------------------------
+2. ROOT INFO
+---------------------------------------------------------------
+GET /
+
+Response:
+{
+  "message": "MovieBox API Server",
+  "version": "1.0.0",
+  "docs": "GET /docs/ → Documentation website",
+  "api_docs": "GET /api/ → API documentation",
+  "health": "GET /healthz → Health check"
+}
+
+---------------------------------------------------------------
+3. HOMEPAGE (banners, category rows)
+---------------------------------------------------------------
+GET /api/homepage
+
+Response:
+{
+  "success": true,
+  "data": {
+    // Array of homepage sections / banners from MovieBox V2 API
+    // Each section may have: title, type, items[]
+    // items[] shape: see "Content Item" below
+  }
+}
+
+Use for: Home screen hero banner and content rows.
+
+---------------------------------------------------------------
+4. TRENDING — ALL (paginated)
+---------------------------------------------------------------
+GET /api/trending?page=1&tab=0
+
+Query params:
+  page  (number, default 1)  — page number
+  tab   (number, default 0)  — tab ID: 0=All, 1=Movies, 2=Series
+
+Response:
+{
+  "success": true,
+  "data": {
+    // Tab operating data from MovieBox V3 API
+    // Contains tab list and content rows
+  }
+}
+
+---------------------------------------------------------------
+5. TRENDING — MOVIES ONLY
+---------------------------------------------------------------
+GET /api/trending/movies
+
+Response:
+{
+  "success": true,
+  "data": { /* same shape as /api/trending with tab=1 */ }
+}
+
+---------------------------------------------------------------
+6. TRENDING — SERIES ONLY
+---------------------------------------------------------------
+GET /api/trending/series
+
+Response:
+{
+  "success": true,
+  "data": { /* same shape as /api/trending with tab=2 */ }
+}
+
+---------------------------------------------------------------
+7. HOT / RANKED CONTENT
+---------------------------------------------------------------
+GET /api/hot
+
+Response:
+{
+  "success": true,
+  "data": {
+    // Hot-ranked subjects from MovieBox V1 API
+  }
+}
+
+Use for: "Hot" or "Top Ranked" section on Home screen.
+
+---------------------------------------------------------------
+8. POPULAR SEARCHES
+---------------------------------------------------------------
+GET /api/popular-searches
+
+Response:
+{
+  "success": true,
+  "data": [
+    {
+      "subjectId": "string",
+      "title": "string",
+      "coverImageUrl": "string",
+      "subjectType": 1,
+      // ... other content item fields
+    }
+  ],
+  "count": 10
+}
+
+Use for: Trending searches shown on the Search screen before the user types.
+
+---------------------------------------------------------------
+9. SEARCH
+---------------------------------------------------------------
+GET /api/search?q=Avatar&page=1&size=20&type=ALL
+
+Query params:
+  q     (string, REQUIRED)  — search keyword
+  page  (number, default 1)
+  size  (number, default 20, max 50)
+  type  (string, default "ALL") — one of: ALL | MOVIES | TV_SERIES | ANIME | MUSIC | EDUCATION
+
+Response:
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "subjectId": "string",
+        "id": "string or number",
+        "title": "string",
+        "subjectType": 1,          // 1=Movie, 2=TV, 5=Education, 6=Music, 7=Anime
+        "detailPath": "string",
+        "coverImageUrl": "string",
+        "cover": { "url": "string", "width": 200, "height": 300 },
+        "releaseDate": "2023-01-01",
+        "duration": 7200,          // seconds
+        "genre": "Action, Drama",
+        "imdbRatingValue": "8.5",
+        "imdbRatingCount": 120000,
+        "countryName": "USA",
+        "season": 3,
+        "corner": "HD",
+        "description": "string"
+      }
+    ],
+    "pager": {
+      "page": 1,
+      "perPage": 20,
+      "hasMore": true,
+      "nextPage": 2,
+      "totalCount": 500
+    },
+    "count": 20,
+    "query": "Avatar",
+    "page": 1,
+    "size": 20,
+    "type": "ALL"
+  }
+}
+
+---------------------------------------------------------------
+10. SEARCH AUTOCOMPLETE / SUGGESTIONS
+---------------------------------------------------------------
+GET /api/search/suggest?q=Av
+
+Query params:
+  q  (string, REQUIRED) — partial keyword (min 1 char)
+
+Response:
+{
+  "success": true,
+  "data": [
+    /* array of Content Items — same shape as search items[] */
+  ],
+  "count": 8,
+  "query": "Av"
+}
+
+Use for: Live search suggestions as the user types.
+
+---------------------------------------------------------------
+11. RAW DETAILS (by subjectId OR detailPath)
+---------------------------------------------------------------
+GET /api/details?id=<subjectId>
+  OR
+GET /api/details?path=<detailPath>
+
+At least one of ?id or ?path is required.
+
+Response:
+{
+  "success": true,
+  "data": {
+    "subjectId": "string",
+    "title": "string",
+    "description": "string",
+    "genre": "string",
+    "releaseDate": "2023-01-01",
+    "imdbRatingValue": "8.5",
+    "seasons": 3,
+    "episodes": 30,
+    "coverImageUrl": "string",
+    "subjectType": 1,
+    "resource": {
+      "downloads": [
+        {
+          "url": "https://...",
+          "resolution": "1080p",
+          "size": 1073741824,
+          "format": "mp4",
+          "quality": "FHD"
+        }
+      ],
+      "captions": [
+        {
+          "url": "https://...",
+          "language": "en",
+          "delay": 0,
+          "format": "vtt"
+        }
+      ]
+    },
+    "metadata": {},
+    "postList": [ /* related items */ ]
+  }
+}
+
+---------------------------------------------------------------
+12. MOVIE DETAILS + STREAM URLS (combined, clean)
+---------------------------------------------------------------
+GET /api/movie/details?id=<subjectId>
+  OR
+GET /api/movie/details?path=<detailPath>
+
+Response:
+{
+  "success": true,
+  "data": {
+    "subject": { /* full subject object — same as /api/details data */ },
+    "streams": [
+      {
+        "url": "https://cdn.../video.m3u8",
+        "resolution": "1080p",
+        "size": 1073741824,
+        "format": "mp4",
+        "quality": "FHD"
+      }
+    ],
+    "totalEpisode": 0,
+    "totalSize": 1073741824,
+    "resolution": "1080p",
+    "subjectTitle": "Movie Title",
+    "resource": { /* raw resource object */ }
+  }
+}
+
+Use for: Movie detail screen — get all info + stream URLs in one call.
+The "streams" array contains direct CDN video URLs to play.
+
+---------------------------------------------------------------
+13. SERIES DETAILS + EPISODE LIST
+---------------------------------------------------------------
+GET /api/series/details?id=<subjectId>&season=1
+  OR
+GET /api/series/details?path=<detailPath>
+
+Query params:
+  id      (string) — subjectId from search
+  path    (string) — detailPath from search (alternative to id)
+  season  (number, optional) — season number (omit for all seasons info)
+
+Response:
+{
+  "success": true,
+  "data": {
+    "info": { /* full subject object */ },
+    "episodes": [
+      {
+        "subjectId": "string",
+        "title": "string",
+        "season": 1,
+        "episode": 1,
+        "coverImageUrl": "string",
+        "duration": 2700,
+        "releaseDate": "2023-01-05"
+      }
+    ]
+  }
+}
+
+Use for: Series detail screen — show season selector and episode list.
+
+---------------------------------------------------------------
+14. SEASON INFO (episode list for a season)
+---------------------------------------------------------------
+GET /api/season?id=<subjectId>&season=1
+
+Query params:
+  id      (string, REQUIRED) — subjectId
+  season  (number, optional) — season number
+
+Response:
+{
+  "success": true,
+  "data": {
+    // Season and episode metadata from MovieBox V3 API
+    // Contains episode list with episode numbers, titles, durations
+  }
+}
+
+---------------------------------------------------------------
+15. EPISODE PLAY INFO (stream/MPD/HLS URLs)
+---------------------------------------------------------------
+GET /api/episode/play?id=<subjectId>&season=1&episode=3
+
+Query params:
+  id       (string, REQUIRED) — subjectId
+  season   (number, default 0) — 0 for movies
+  episode  (number, default 0) — 0 for movies
+
+Response:
+{
+  "success": true,
+  "data": {
+    // Play info: MPD / HLS manifest URLs and DRM info
+    // May include: playUrl, mpdUrl, token, keyId, etc.
+  }
+}
+
+Use for: Starting video playback. Pass the returned URL to your video player.
+
+---------------------------------------------------------------
+16. EPISODE RESOURCE (download/stream URLs)
+---------------------------------------------------------------
+GET /api/episode/resource?id=<subjectId>&season=1&episode=3
+
+Query params:
+  id       (string, REQUIRED) — subjectId
+  season   (number, default 0) — 0 for movies
+  episode  (number, default 0) — 0 for movies
+
+Response:
+{
+  "success": true,
+  "data": {
+    // Resource info: download URLs, resolution options, subtitles
+    // list[] or downloads[]: array of { url, resolution, size, format, quality }
+    // totalEpisode, totalSize, resolution, subjectTitle
+  }
+}
+
+Use for: Showing quality selector and getting the actual playable CDN URL.
+
+---------------------------------------------------------------
+17. PROXY — VIDEO STREAM (with Range/seek support)
+---------------------------------------------------------------
+GET /api/proxy/stream?url=<encoded-cdn-url>
+
+Query params:
+  url  (string, REQUIRED) — URL-encoded CDN video URL obtained from episode/resource or movie/details
+
+Supports HTTP Range headers (for seeking in video player).
+CORS headers are set — safe to call from web or React Native WebView.
+
+Use for: If the CDN URL cannot be loaded directly (CORS block), wrap it:
+  const proxyUrl = `http://localhost:8080/api/proxy/stream?url=${encodeURIComponent(cdnUrl)}`;
+
+---------------------------------------------------------------
+18. PROXY — SUBTITLE / CAPTION FILE
+---------------------------------------------------------------
+GET /api/proxy/sub?url=<encoded-subtitle-url>
+
+Query params:
+  url  (string, REQUIRED) — URL-encoded subtitle file URL (.srt, .vtt)
+
+Response: Raw subtitle file content (text/vtt)
+CORS headers are set.
+
+Use for: Loading subtitles/captions in your video player.
+  const subUrl = `http://localhost:8080/api/proxy/sub?url=${encodeURIComponent(captionUrl)}`;
+
+=============================================================
+CONTENT ITEM SHAPE (reused across endpoints)
+=============================================================
+{
+  "subjectId": "string",          // Primary ID — use this for all detail lookups
+  "id": "string or number",       // Alternate ID
+  "title": "string",
+  "subjectType": 1,               // 0=All, 1=Movie, 2=TV Series, 5=Education, 6=Music, 7=Anime
+  "detailPath": "string",         // Use with ?path= params as alternative to subjectId
+  "coverImageUrl": "string",      // Poster image URL
+  "cover": {
+    "url": "string",
+    "width": 200,
+    "height": 300
+  },
+  "releaseDate": "2023-01-01",
+  "duration": 7200,               // Total duration in seconds
+  "genre": "Action, Drama",
+  "imdbRatingValue": "8.5",
+  "imdbRatingCount": 120000,
+  "countryName": "USA",
+  "season": 3,                    // Number of seasons (for series)
+  "corner": "HD",                 // Badge label (e.g. "HD", "NEW", "4K")
+  "description": "string"
+}
+
+=============================================================
+ERROR RESPONSES (all endpoints)
+=============================================================
+On error, all endpoints return:
+{
+  "success": false,
+  "error": "Human-readable error message"
+}
+
+HTTP status codes used:
+  400 — Bad request (missing required param)
+  403 — Forbidden (proxy URL not from allowed domain)
+  502 — Bad Gateway (upstream MovieBox API error)
+  500 — Internal server error
+
+=============================================================
+TYPICAL APP FLOW (step-by-step)
+=============================================================
+
+HOME SCREEN:
+  1. GET /api/trending          → display trending rows
+  2. GET /api/homepage          → display banner / hero section
+  3. GET /api/hot               → display hot/ranked section
+  4. GET /api/popular-searches  → display trending search chips
+
+SEARCH SCREEN:
+  1. GET /api/search/suggest?q=<typing>  → live suggestions
+  2. GET /api/search?q=<term>&type=MOVIES → full results with pagination
+
+MOVIE DETAIL SCREEN:
+  1. GET /api/movie/details?id=<subjectId>
+     → subject (title, poster, description, rating, genre)
+     → streams[] (CDN video URLs)
+  2. To play: use streams[0].url directly, or wrap with /api/proxy/stream
+  3. For subtitles: wrap caption URL with /api/proxy/sub
+
+SERIES DETAIL SCREEN:
+  1. GET /api/series/details?id=<subjectId>&season=1
+     → info (title, poster, seasons count, etc.)
+     → episodes[] (episode list)
+  2. User taps episode → GET /api/episode/play?id=<subjectId>&season=1&episode=3
+  3. Or for download URLs → GET /api/episode/resource?id=<subjectId>&season=1&episode=3
+
+=============================================================
+RENDER.COM DEPLOYMENT
+=============================================================
+To deploy this API server on Render.com, use:
+
+  Build Command:
+    pnpm install && pnpm --filter @workspace/api-server run build
+
+  Start Command:
+    node --enable-source-maps artifacts/api-server/dist/index.mjs
+
+  Environment Variables to set on Render:
+    PORT=8080
+    NODE_ENV=production
+
+  Health Check Path:
+    /api/healthz
+
+After deployment, replace all occurrences of:
+  http://localhost:8080
+with your Render URL:
+  https://your-app-name.onrender.com
+
+=============================================================
+END OF PROMPT
+=============================================================
