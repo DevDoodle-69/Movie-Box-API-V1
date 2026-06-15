@@ -3,8 +3,8 @@ import { useRoute, Link, useLocation } from "wouter";
 import { ChevronLeft, Loader2, AlertCircle, List } from "lucide-react";
 import VideoPlayer, { type QualityOption } from "@/components/VideoPlayer";
 import EpisodeSelector from "@/components/EpisodeSelector";
-import { getItem, getEpisodeResource } from "@/lib/api";
-import type { ItemDetail, Season, ResourceDetector } from "@/lib/types";
+import { getItem, getEpisodeResource, proxyStreamUrl } from "@/lib/api";
+import type { ItemDetail, Season, FlatStream } from "@/lib/types";
 
 function getSearchParams() {
   const params = new URLSearchParams(window.location.search);
@@ -12,6 +12,50 @@ function getSearchParams() {
     season: parseInt(params.get("season") ?? "0", 10),
     episode: parseInt(params.get("episode") ?? "0", 10),
   };
+}
+
+/**
+ * Build QualityOption[] from flat stream items.
+ * - Filters to the right episode for series (season>0 && episode>0)
+ * - Deduplicates by resolution, preferring H.264 over HEVC
+ * - Proxies URLs through /api/proxy/stream
+ */
+function buildQualities(streams: FlatStream[], season: number, episode: number): QualityOption[] {
+  let pool = streams;
+
+  if (season > 0 && episode > 0) {
+    const exact = streams.filter((s) => s.se === season && s.ep === episode);
+    if (exact.length > 0) {
+      pool = exact;
+    } else {
+      const epOnly = streams.filter((s) => s.ep === episode);
+      if (epOnly.length > 0) pool = epOnly;
+    }
+  }
+
+  const resMap = new Map<number, FlatStream>();
+  for (const s of pool) {
+    if (!s.resourceLink || !s.resolution) continue;
+    const existing = resMap.get(s.resolution);
+    if (!existing) {
+      resMap.set(s.resolution, s);
+    } else {
+      const newIsH264 = s.codecName === "h264" || !s.resourceLink.includes("/h265/");
+      const existingIsH264 = existing.codecName === "h264" || !existing.resourceLink.includes("/h265/");
+      if (newIsH264 && !existingIsH264) {
+        resMap.set(s.resolution, s);
+      }
+    }
+  }
+
+  return [...resMap.values()]
+    .filter((s) => s.resourceLink)
+    .map((s) => ({
+      label: `${s.resolution}p`,
+      resolution: s.resolution,
+      url: proxyStreamUrl(s.resourceLink),
+    }))
+    .sort((a, b) => b.resolution - a.resolution);
 }
 
 export default function WatchPage() {
@@ -37,7 +81,6 @@ export default function WatchPage() {
     setQualities([]);
 
     try {
-      // Fetch item details and resource in parallel
       const [itemDetail, resourceRes] = await Promise.all([
         getItem(subjectId, season, episode),
         getEpisodeResource(subjectId, season, episode),
@@ -46,10 +89,7 @@ export default function WatchPage() {
       setDetail(itemDetail);
 
       const isSeries = itemDetail.type === "TV_SERIES" || (itemDetail.seNum ?? 0) > 0;
-
-      if (isSeries && itemDetail.seasons && itemDetail.seasons.length > 0) {
-        setSeasons(itemDetail.seasons);
-      } else if (isSeries && (itemDetail.seNum ?? itemDetail.totalSeasons ?? 0) > 0) {
+      if (isSeries && (itemDetail.totalSeasons ?? itemDetail.seNum ?? 0) > 0) {
         const totalSeasons = itemDetail.totalSeasons ?? itemDetail.seNum ?? 1;
         setSeasons(Array.from({ length: totalSeasons }, (_, i) => ({
           season: i + 1,
@@ -57,20 +97,13 @@ export default function WatchPage() {
         })));
       }
 
-      // Extract resolutions from resource response
-      const detectors: ResourceDetector[] = (resourceRes.data?.resourceDetectors ?? resourceRes.resourceDetectors ?? []) as ResourceDetector[];
-      const bestDetector = detectors[0];
-      const resList = bestDetector?.resolutionList ?? itemDetail.bestStream?.resolutionList ?? [];
+      let qs = buildQualities(resourceRes.streams, season, episode);
 
-      if (resList.length > 0) {
-        const qs: QualityOption[] = resList
-          .filter((r) => r.resourceLink)
-          .map((r) => ({
-            label: `${r.resolution}p`,
-            resolution: r.resolution,
-            url: r.resourceLink,
-          }))
-          .sort((a, b) => b.resolution - a.resolution);
+      if (qs.length === 0 && itemDetail.streams && itemDetail.streams.length > 0) {
+        qs = buildQualities(itemDetail.streams, season, episode);
+      }
+
+      if (qs.length > 0) {
         setQualities(qs);
       } else {
         setError("No streams available for this content.");
@@ -104,7 +137,7 @@ export default function WatchPage() {
   return (
     <div className="min-h-screen bg-black flex flex-col">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-3 bg-black/90">
+      <div className="flex items-center justify-between px-4 py-3 bg-black/90 border-b border-white/5">
         <div className="flex items-center gap-3">
           <Link href={`/detail/${id}`}>
             <button className="flex items-center gap-1.5 text-white/70 hover:text-white transition-colors">
@@ -114,10 +147,10 @@ export default function WatchPage() {
           </Link>
           {detail && (
             <div>
-              <h1 className="text-white font-semibold text-sm sm:text-base">{detail.title}</h1>
+              <h1 className="text-white font-semibold text-sm sm:text-base leading-tight">{detail.title}</h1>
               {isSeries && currentSeason > 0 && (
                 <p className="text-gray-400 text-xs">
-                  Season {currentSeason}, Episode {currentEpisode}
+                  Season {currentSeason} · Episode {currentEpisode}
                 </p>
               )}
             </div>
@@ -139,7 +172,6 @@ export default function WatchPage() {
 
       {/* Player area */}
       <div className="flex flex-col lg:flex-row flex-1">
-        {/* Video player */}
         <div className={`${showEpisodes && isSeries ? "lg:flex-1" : "w-full"} flex flex-col`}>
           {loading ? (
             <div className="aspect-video bg-black flex items-center justify-center">
@@ -149,9 +181,9 @@ export default function WatchPage() {
               </div>
             </div>
           ) : error ? (
-            <div className="aspect-video bg-black flex flex-col items-center justify-center gap-4">
+            <div className="aspect-video bg-black flex flex-col items-center justify-center gap-4 px-4">
               <AlertCircle className="w-12 h-12 text-red-500" />
-              <p className="text-white font-medium">{error}</p>
+              <p className="text-white font-medium text-center">{error}</p>
               <div className="flex gap-3">
                 <button
                   onClick={() => loadStreams(id, currentSeason, currentEpisode)}
@@ -175,22 +207,49 @@ export default function WatchPage() {
             />
           )}
 
-          {/* Below player info */}
           {detail && !loading && (
-            <div className="p-4 bg-[#0a0a0a]">
-              <h2 className="text-white font-bold text-lg">{detail.title}</h2>
-              <div className="flex items-center gap-3 mt-1 flex-wrap text-sm text-gray-400">
-                {detail.rating && <span>⭐ {detail.rating}</span>}
-                {detail.releaseDate && <span>· {detail.releaseDate.slice(0, 4)}</span>}
-                {detail.genre && <span>· {detail.genre.split(",")[0]}</span>}
-                {detail.duration && <span>· {detail.duration}</span>}
+            <div className="p-4 sm:p-5 bg-[#0a0a0a] border-t border-white/5">
+              <h2 className="text-white font-bold text-lg leading-snug">{detail.title}</h2>
+              <div className="flex items-center gap-3 mt-1.5 flex-wrap text-sm text-gray-400">
+                {detail.rating && (
+                  <span className="flex items-center gap-1 text-yellow-400 font-medium">
+                    ⭐ {detail.rating}
+                    {detail.ratingCount && (
+                      <span className="text-gray-500 text-xs font-normal">
+                        ({Number(detail.ratingCount).toLocaleString()})
+                      </span>
+                    )}
+                  </span>
+                )}
+                {detail.releaseDate && <span className="text-gray-500">·</span>}
+                {detail.releaseDate && <span>{detail.releaseDate.slice(0, 4)}</span>}
+                {detail.genre && (
+                  <>
+                    <span className="text-gray-500">·</span>
+                    <span>{detail.genre.split(",")[0].trim()}</span>
+                  </>
+                )}
+                {detail.duration && (
+                  <>
+                    <span className="text-gray-500">·</span>
+                    <span>{detail.duration}</span>
+                  </>
+                )}
+                {detail.contentRating && (
+                  <span className="px-1.5 py-0.5 border border-gray-600 text-gray-400 text-xs rounded">
+                    {detail.contentRating}
+                  </span>
+                )}
               </div>
+              {detail.description && (
+                <p className="text-gray-400 text-sm mt-2 leading-relaxed line-clamp-3">{detail.description}</p>
+              )}
               {qualities.length > 0 && (
-                <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-                  <span className="text-gray-500 text-xs">Streams:</span>
+                <div className="mt-3 flex items-center gap-1.5 flex-wrap">
+                  <span className="text-gray-600 text-xs">Available in:</span>
                   {qualities.map((q) => (
-                    <span key={q.resolution} className="px-2 py-0.5 bg-white/6 text-gray-400 text-xs rounded">
-                      {q.resolution}p
+                    <span key={q.resolution} className="px-2 py-0.5 bg-white/6 text-gray-400 text-xs rounded border border-white/8">
+                      {q.label}
                     </span>
                   ))}
                 </div>
@@ -199,7 +258,6 @@ export default function WatchPage() {
           )}
         </div>
 
-        {/* Episode panel (series only) */}
         {showEpisodes && isSeries && seasons.length > 0 && (
           <div className="lg:w-80 bg-[#0d0d0d] border-l border-white/5 overflow-y-auto max-h-screen p-4">
             <EpisodeSelector

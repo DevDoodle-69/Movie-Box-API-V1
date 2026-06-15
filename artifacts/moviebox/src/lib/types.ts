@@ -1,3 +1,17 @@
+export interface FlatStream {
+  resourceLink: string;
+  resolution: number;
+  se: number;
+  ep: number;
+  codecName?: string;
+  duration?: number;
+  size?: string;
+  title?: string;
+  uploadBy?: string;
+  sourceUrl?: string;
+  requireMemberType?: number;
+}
+
 export interface Resolution {
   resolution: number;
   resourceLink: string;
@@ -29,6 +43,7 @@ export interface StaffMember {
   name: string;
   role?: string;
   avatar?: string;
+  staffType?: number;
 }
 
 export interface ContentItem {
@@ -111,19 +126,23 @@ export interface ItemDetail {
   releaseDate?: string;
   genre?: string;
   rating?: string;
+  ratingCount?: string;
   country?: string;
+  language?: string;
   duration?: string;
   description?: string;
   staffList?: StaffMember[];
-  streams?: ResourceDetector[];
+  streams?: FlatStream[];
   totalStreams?: number;
-  bestStream?: ResourceDetector;
+  bestStream?: FlatStream;
   playInfo?: unknown;
   seasons?: Season[];
   totalSeasons?: number;
   seNum?: number;
   errors?: Record<string, string>;
   contentRating?: string;
+  corner?: string;
+  tagList?: string[];
 }
 
 export interface SuggestionItem extends NormalizedItem {}
