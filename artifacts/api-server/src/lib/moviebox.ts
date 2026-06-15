@@ -5,9 +5,16 @@
  *  V1  https://h5.aoneroom.com          — account cookie, used for popular/search-rank
  *  V2  https://h5-api.aoneroom.com       — GET-only endpoints: homepage, suggest, details
  *  V3  https://api6.aoneroom.com         — signed POST/GET: search, subject, season, play
+ *
+ * Resilience features:
+ *  - Automatic retry with exponential backoff (up to 3 attempts)
+ *  - V3 host-pool failover across 5 upstream hosts
+ *  - AbortSignal timeouts on every fetch (15 s default, 20 s for streams)
+ *  - Runtime auth token auto-updated from x-user response headers
  */
 
 import { createHash, createHmac } from "node:crypto";
+import { withRetry } from "./retry.js";
 
 // ─── V1 ───────────────────────────────────────────────────────────────────────
 
@@ -20,6 +27,7 @@ const V1_HDR: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
   Referer: `https://${V1_HOST}/`,
   Host: V1_HOST,
+  Connection: "keep-alive",
 };
 
 // ─── V2 ───────────────────────────────────────────────────────────────────────
@@ -31,6 +39,7 @@ const V2_HDR: Record<string, string> = {
   Accept: "application/json",
   "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
   Referer: "https://videodownloader.site/",
+  Connection: "keep-alive",
 };
 
 // ─── V3 signing ───────────────────────────────────────────────────────────────
@@ -43,10 +52,8 @@ const V3_HOST_POOL = [
   "https://api3.aoneroom.com",
 ];
 
-// Secret key (base64-encoded) from moviebox_api/v3/constants.py
 const V3_SECRET_DEFAULT_B64 = "76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O";
 
-// Generated device info matching the Python library's _generate_client_info()
 const V3_USER_AGENT =
   "com.community.oneroom/50020045 (Linux; U; Android 12; en_US; 22101316G; Build/S1B.220414.015; Cronet/135.0.7012.3)";
 
@@ -70,7 +77,6 @@ const V3_CLIENT_INFO = JSON.stringify({
   "X-Play-Mode": "2",
 });
 
-// Runtime auth token (updated from x-user response headers)
 let _v3RuntimeToken: string | null = null;
 
 function b64Decode(s: string): Buffer {
@@ -162,7 +168,7 @@ function buildSignedHeaders(
   method: string,
   url: string,
   body: string | null = null,
-  includePLayMode = false,
+  includePlayMode = false,
 ): Record<string, string> {
   const ts = Date.now();
   const accept = "application/json";
@@ -178,7 +184,7 @@ function buildSignedHeaders(
     "X-Client-Status": "0",
   };
   if (_v3RuntimeToken) headers["Authorization"] = `Bearer ${_v3RuntimeToken}`;
-  if (includePLayMode) headers["X-Play-Mode"] = "2";
+  if (includePlayMode) headers["X-Play-Mode"] = "2";
   return headers;
 }
 
@@ -200,17 +206,28 @@ function absorbXUser(headers: Headers): void {
 
 let _v1Cookie = "";
 let _v1CookieExpiry = 0;
+let _v1CookieFetch: Promise<string> | null = null;
 
 async function getV1Cookie(): Promise<string> {
   if (_v1Cookie && Date.now() < _v1CookieExpiry) return _v1Cookie;
-  const res = await fetch(
-    `${V1_BASE}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`,
-    { headers: V1_HDR, signal: AbortSignal.timeout(10_000) },
-  );
-  const setCookie = res.headers.get("set-cookie") ?? "";
-  _v1Cookie = setCookie.split(";")[0]?.trim() ?? "";
-  _v1CookieExpiry = Date.now() + 23 * 60 * 60 * 1000;
-  return _v1Cookie;
+  if (_v1CookieFetch) return _v1CookieFetch;
+
+  _v1CookieFetch = (async () => {
+    const res = await fetch(
+      `${V1_BASE}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`,
+      { headers: V1_HDR, signal: AbortSignal.timeout(10_000) },
+    );
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    _v1Cookie = setCookie.split(";")[0]?.trim() ?? "";
+    _v1CookieExpiry = Date.now() + 23 * 60 * 60 * 1000;
+    _v1CookieFetch = null;
+    return _v1Cookie;
+  })().catch((err) => {
+    _v1CookieFetch = null;
+    throw err;
+  });
+
+  return _v1CookieFetch;
 }
 
 // ─── Generic fetch helpers ────────────────────────────────────────────────────
@@ -223,87 +240,111 @@ function extractData(json: unknown): unknown {
 }
 
 async function v1Get(path: string, params: Record<string, string | number> = {}): Promise<unknown> {
-  const cookie = await getV1Cookie();
-  const url = new URL(`${V1_BASE}${path}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-  const res = await fetch(url.toString(), {
-    headers: { ...V1_HDR, Cookie: cookie },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`V1 upstream ${res.status} on ${path}`);
-  return extractData(await res.json());
+  return withRetry(async () => {
+    const cookie = await getV1Cookie();
+    const url = new URL(`${V1_BASE}${path}`);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+    const res = await fetch(url.toString(), {
+      headers: { ...V1_HDR, Cookie: cookie },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`V1 upstream ${res.status} on ${path}`);
+    return extractData(await res.json());
+  }, { attempts: 2 });
 }
 
 async function v2Get(path: string, params: Record<string, string | number> = {}): Promise<unknown> {
-  const url = new URL(`${V2_BASE}${path}`);
-  url.searchParams.set("host", "moviebox.ph");
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-  const res = await fetch(url.toString(), {
-    headers: V2_HDR,
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`V2 upstream ${res.status} on ${path}: ${t.slice(0, 200)}`);
-  }
-  return extractData(await res.json());
+  return withRetry(async () => {
+    const url = new URL(`${V2_BASE}${path}`);
+    url.searchParams.set("host", "moviebox.ph");
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+    const res = await fetch(url.toString(), {
+      headers: V2_HDR,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`V2 upstream ${res.status} on ${path}: ${t.slice(0, 200)}`);
+    }
+    return extractData(await res.json());
+  }, { attempts: 3, baseDelayMs: 300 });
 }
 
 async function v3Get(path: string, params: Record<string, string | number> = {}): Promise<unknown> {
   const lastError: Error[] = [];
+
   for (const base of V3_HOST_POOL) {
-    const url = new URL(`${base}${path}`);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-    const urlStr = url.toString();
-    const hdrs = buildSignedHeaders("GET", urlStr, null);
     try {
-      const res = await fetch(urlStr, { headers: hdrs, signal: AbortSignal.timeout(15_000) });
-      absorbXUser(res.headers);
-      if (res.status >= 500 || res.status === 429 || res.status === 407 || res.status === 403) {
-        lastError.push(new Error(`V3 ${res.status} on ${base}${path}`));
-        continue;
-      }
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        throw new Error(`V3 upstream ${res.status} on ${path}: ${t.slice(0, 200)}`);
-      }
-      return extractData(await res.json());
+      return await withRetry(async () => {
+        const url = new URL(`${base}${path}`);
+        for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+        const urlStr = url.toString();
+        const hdrs = buildSignedHeaders("GET", urlStr, null);
+        const res = await fetch(urlStr, { headers: hdrs, signal: AbortSignal.timeout(15_000) });
+        absorbXUser(res.headers);
+        if (res.status >= 500 || res.status === 429 || res.status === 407 || res.status === 403) {
+          throw new Error(`V3 ${res.status} on ${base}${path}`);
+        }
+        if (!res.ok) {
+          const t = await res.text().catch(() => "");
+          throw new Error(`V3 upstream ${res.status} on ${path}: ${t.slice(0, 200)}`);
+        }
+        return extractData(await res.json());
+      }, {
+        attempts: 2,
+        baseDelayMs: 200,
+        shouldRetry: (err) => {
+          if (err instanceof Error && err.message.startsWith("V3 upstream")) return false;
+          return true;
+        },
+      });
     } catch (e) {
       if (e instanceof Error && e.message.startsWith("V3 upstream")) throw e;
       lastError.push(e as Error);
     }
   }
+
   throw lastError[lastError.length - 1] ?? new Error("All V3 hosts failed");
 }
 
 async function v3Post(path: string, body: Record<string, unknown>): Promise<unknown> {
   const lastError: Error[] = [];
   const bodyStr = JSON.stringify(body);
+
   for (const base of V3_HOST_POOL) {
-    const url = `${base}${path}`;
-    const hdrs = buildSignedHeaders("POST", url, bodyStr);
     try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: hdrs,
-        body: bodyStr,
-        signal: AbortSignal.timeout(15_000),
+      return await withRetry(async () => {
+        const url = `${base}${path}`;
+        const hdrs = buildSignedHeaders("POST", url, bodyStr);
+        const res = await fetch(url, {
+          method: "POST",
+          headers: hdrs,
+          body: bodyStr,
+          signal: AbortSignal.timeout(15_000),
+        });
+        absorbXUser(res.headers);
+        if (res.status >= 500 || res.status === 429 || res.status === 407 || res.status === 403) {
+          throw new Error(`V3 ${res.status} on ${base}${path}`);
+        }
+        if (!res.ok) {
+          const t = await res.text().catch(() => "");
+          throw new Error(`V3 upstream ${res.status} on ${path}: ${t.slice(0, 200)}`);
+        }
+        return extractData(await res.json());
+      }, {
+        attempts: 2,
+        baseDelayMs: 200,
+        shouldRetry: (err) => {
+          if (err instanceof Error && err.message.startsWith("V3 upstream")) return false;
+          return true;
+        },
       });
-      absorbXUser(res.headers);
-      if (res.status >= 500 || res.status === 429 || res.status === 407 || res.status === 403) {
-        lastError.push(new Error(`V3 ${res.status} on ${base}${path}`));
-        continue;
-      }
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        throw new Error(`V3 upstream ${res.status} on ${path}: ${t.slice(0, 200)}`);
-      }
-      return extractData(await res.json());
     } catch (e) {
       if (e instanceof Error && e.message.startsWith("V3 upstream")) throw e;
       lastError.push(e as Error);
     }
   }
+
   throw lastError[lastError.length - 1] ?? new Error("All V3 hosts failed");
 }
 
@@ -395,20 +436,14 @@ export interface MbDetailResult {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/** Homepage (banners, category rows) — V2 GET */
 export async function getHomepage(): Promise<unknown> {
   return v2Get("/wefeed-h5api-bff/home");
 }
 
-/** Trending / homepage tabs — V3 GET (signed) */
 export async function getMainPage(page = 1, tabId = 0): Promise<unknown> {
   return v3Get("/wefeed-mobile-bff/tab-operating", { page, tabId, version: "" });
 }
 
-/**
- * Search content — V3 POST (signed)
- * type: ALL | MOVIES | TV_SERIES | ANIME | MUSIC | EDUCATION
- */
 export async function searchContent(
   keyword: string,
   page = 1,
@@ -425,7 +460,6 @@ export async function searchContent(
   return data as MbSearchResults;
 }
 
-/** Autocomplete search suggestions — V2 GET */
 export async function searchSuggest(keyword: string): Promise<MbContentItem[]> {
   const data = await v2Get("/wefeed-h5api-bff/subject/search-suggest", { keyword });
   if (Array.isArray(data)) return data as MbContentItem[];
@@ -435,20 +469,17 @@ export async function searchSuggest(keyword: string): Promise<MbContentItem[]> {
   return [];
 }
 
-/** Item details by subjectId — V3 GET (signed) */
 export async function getSubjectById(subjectId: string): Promise<MbDetailResult> {
   const data = await v3Get("/wefeed-mobile-bff/subject-api/get", { subjectId });
   return data as MbDetailResult;
 }
 
-/** Season info (episode list) by subjectId — V3 GET (signed) */
 export async function getSeasonInfo(subjectId: string, season?: number): Promise<unknown> {
   const params: Record<string, string | number> = { subjectId };
   if (season !== undefined) params.seNum = season;
   return v3Get("/wefeed-mobile-bff/subject-api/season-info", params);
 }
 
-/** Play/stream info for a specific episode — V3 GET (signed) */
 export async function getPlayInfo(
   subjectId: string,
   season = 0,
@@ -461,7 +492,6 @@ export async function getPlayInfo(
   });
 }
 
-/** Download resource URLs for a specific episode — V3 GET (signed) */
 export async function getResource(
   subjectId: string,
   season = 0,
@@ -474,16 +504,11 @@ export async function getResource(
   });
 }
 
-/**
- * Full details for any item by detailPath — V2 GET
- * Use this when you have a detailPath from an older V2 result
- */
 export async function getDetailsByPath(detailPath: string): Promise<MbDetailResult> {
   const data = await v2Get("/wefeed-h5api-bff/detail", { detailPath });
   return data as MbDetailResult;
 }
 
-/** Hot ranked content — V1 GET */
 export async function getHotContent(): Promise<unknown> {
   try {
     return await v1Get("/wefeed-h5-bff/web/subject/search-rank");
@@ -492,7 +517,6 @@ export async function getHotContent(): Promise<unknown> {
   }
 }
 
-/** Popular searches — V1 GET */
 export async function getPopularSearches(): Promise<MbContentItem[]> {
   try {
     const data = await v1Get("/wefeed-h5-bff/web/subject/everyone-search");
